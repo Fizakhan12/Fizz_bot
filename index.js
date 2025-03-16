@@ -6,6 +6,10 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 let userDatabase = {}; // Store users temporarily (Use a database for persistence)
 let userLinkCount = {}; // Store link counts for each user
 
+let userAdCount = {}; // Store counts per user per chat
+let adCountingEnabled = {}; // Track if counting is enabled per chat
+let activeUsers = {}; // Track users who send messages after /check 
+
 // Handle /start command
 const isAdminOrOwner = async (chatId, userId) => {
     try {
@@ -16,6 +20,113 @@ const isAdminOrOwner = async (chatId, userId) => {
         return false;
     }
 };
+//check related code 
+bot.onText(/\/check/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    if (!(await isAdminOrOwner(chatId, userId))) {
+        return bot.sendMessage(chatId, "❌ Only admins and the owner can start counting.");
+    }
+
+    // Reset counts and enable counting
+    userAdCount[chatId] = {};
+    activeUsers[chatId] = new Set();
+    adCountingEnabled[chatId] = true;
+
+    bot.sendMessage(chatId, "✅ Counting has started! Messages containing 'AD', 'all done', or 'done' will be counted.");
+});
+
+// Count messages only when counting is enabled
+bot.on('message', (msg) => {
+    if (!msg.text) return;
+
+    const chatId = msg.chat.id;
+    const text = msg.text.toLowerCase();
+    
+    if (!adCountingEnabled[chatId]) return; // Ignore messages if counting hasn't started
+    // Track active users
+    activeUsers[chatId].add(username);
+    const triggerWords = ["ad", "all done", "done"];
+    if (triggerWords.includes(text)) {
+        const username = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+        if (!userAdCount[chatId][username]) {
+            userAdCount[chatId][username] = 0;
+        }
+        userAdCount[chatId][username] += 1;
+    }
+});
+
+
+// Admin stops counting and displays results with /total_ad
+bot.onText(/\/count_ad/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    if (!(await isAdminOrOwner(chatId, userId))) {
+        return bot.sendMessage(chatId, "❌ Only admins and the owner can stop counting and view results.");
+    }
+
+    if (!userAdCount[chatId] || Object.keys(userAdCount[chatId]).length === 0) {
+        return bot.sendMessage(chatId, "📊 No messages were counted.");
+    }
+
+    let totalCount = 0;
+    let response = "📊 **Total Counts per User:**\n";
+    var index=1;
+    for (const [username, count] of Object.entries(userAdCount[chatId])) {
+        totalCount += count;
+        response += `${index}. ${username}: ${count} times\n`;
+        index++;
+    }
+
+    response += `\n🔹 **Total Count in Chat:** ${totalCount}`;
+
+    // Stop counting after displaying results
+    adCountingEnabled[chatId] = false;
+
+    bot.sendMessage(chatId, response);
+});
+bot.onText(/\/unsafelist/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    if (!(await isAdminOrOwner(chatId, userId))) {
+        return bot.sendMessage(chatId, "❌ Only admins can use this command.");
+    }
+
+    if (!adCountingEnabled[chatId]) {
+        return bot.sendMessage(chatId, "⚠️ Counting was not started. Use /check first.");
+    }
+
+    try {
+        const chatMembers = await bot.getChatAdministrators(chatId);
+        const allUsers = new Set(activeUsers[chatId]); // Users who sent any message
+        const usersWhoSentAd = new Set(Object.keys(userAdCount[chatId])); // Users who sent an AD message
+
+        let unsafeUsers = [];
+        for (let user of allUsers) {
+            if (!usersWhoSentAd.has(user)) {
+                unsafeUsers.push(user);
+            }
+        }
+
+        if (unsafeUsers.length === 0) {
+            return bot.sendMessage(chatId, "✅ Everyone has sent an AD-related message.");
+        }
+
+        let response = "🚨 **Users who didn't send an AD message:**\n";
+        unsafeUsers.forEach((user, index) => {
+            response += `${index + 1}. ${user}\n`;
+        });
+
+        bot.sendMessage(chatId, response);
+    } catch (error) {
+        console.error("Error fetching group members:", error);
+        bot.sendMessage(chatId, "❌ Error retrieving group members.");
+    }
+});
 
 // Handle /start command (Only Admins & Owner)
 bot.onText(/\/start/, async (msg) => {
